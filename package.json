@@ -1,0 +1,30 @@
+{
+  "name": "pgm-image-processor",
+  "version": "1.0.0",
+  "description": "Sistema de processamento de imagens PGM com paralelismo usando processos independentes e FIFO",
+  "main": "src/index.js",
+  "scripts": {
+    "start": "node processar.js",
+    "processar": "node processar.js",
+    "visualizar": "node visualizar-pgm.js",
+    "ver": "node visualizar-pgm.js && start visualizador\\index.html",
+    "atualizar": "node atualizar-visualizador.js",
+    "sender": "node src/sender.js",
+    "worker": "node src/worker.js"
+  },
+  "keywords": [
+    "image-processing",
+    "pgm",
+    "parallel-processing",
+    "fifo",
+    "ipc",
+    "threads"
+  ],
+  "author": "Sistema de Processamento de Imagens",
+  "license": "MIT",
+  "engines": {
+    "node": ">=14.0.0"
+  },
+  "devDependencies": {},
+  "dependencies": {}
+}
