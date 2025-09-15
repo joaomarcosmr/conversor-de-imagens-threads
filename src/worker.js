@@ -143,7 +143,10 @@ async function processWithThreadPool(inputPgm, mode, t1, t2, nthreads) {
     
     // Compartilha dados entre threads (equivalente a g_in, g_out globais)
     const inputBuffer = new Uint8Array(inputPgm.data);   // g_in.data
-    const outputBuffer = new Uint8Array(outputPgm.data); // g_out.data
+    
+    // Cria SharedArrayBuffer para permitir compartilhamento entre threads
+    const sharedOutputBuffer = new SharedArrayBuffer(inputPgm.data.length);
+    const outputBuffer = new Uint8Array(sharedOutputBuffer); // g_out.data
     
     // Cria tarefas (divide o trabalho em blocos de linhas)
     const tasks = createTasks(inputPgm.h, nthreads);
@@ -162,7 +165,7 @@ async function processWithThreadPool(inputPgm, mode, t1, t2, nthreads) {
         const worker = new Worker(path.join(__dirname, 'worker-thread.js'), {
             workerData: {
                 inputBuffer,              // g_in.data
-                outputBuffer,             // g_out.data
+                sharedOutputBuffer,       // SharedArrayBuffer para g_out.data
                 width: inputPgm.w,        // g_in.w
                 height: inputPgm.h,       // g_in.h
                 mode,                     // g_mode
@@ -177,21 +180,29 @@ async function processWithThreadPool(inputPgm, mode, t1, t2, nthreads) {
         
         // Promise para lidar com mensagens do worker
         const workerPromise = new Promise((resolve, reject) => {
+            let taskCompleted = false;
+            
             worker.on('message', async (message) => {
                 if (message.type === 'TASK_COMPLETED') {
                     console.log(`Thread ${message.threadId} concluiu tarefa (${message.processedPixels} pixels)`);
                     // Equivalente a decrementar remaining_tasks e sinalizar sem_done
                     await coordinator.taskCompleted();
+                    taskCompleted = true;
                 } else if (message.type === 'TASK_ERROR') {
                     console.error(`Thread ${message.threadId} erro: ${message.error}`);
                     reject(new Error(message.error));
                 }
             });
             
-            worker.on('error', reject);
+            worker.on('error', (error) => {
+                if (!taskCompleted) {
+                    reject(error);
+                }
+            });
+            
             worker.on('exit', (code) => {
-                if (code !== 0) {
-                    reject(new Error(`Worker ${i} saiu com código ${code}`));
+                if (code !== 0 && !taskCompleted) {
+                    reject(new Error(`Worker ${i} saiu com código ${code} antes de completar tarefa`));
                 } else {
                     resolve();
                 }
@@ -219,6 +230,13 @@ async function processWithThreadPool(inputPgm, mode, t1, t2, nthreads) {
     console.log('Terminando worker threads...');
     for (const worker of workers) {
         worker.postMessage({ type: 'TERMINATE' });
+    }
+    
+    // Aguarda um pouco para que os workers processem a mensagem TERMINATE
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    // Força o término se necessário
+    for (const worker of workers) {
         await worker.terminate(); // Equivalente a pthread_join
     }
     

@@ -1,11 +1,18 @@
 #!/usr/bin/env node
 
-// processar.js - Sistema de Processamento de Imagens PGM
-// Equivalente ao código C com paralelismo usando processos independentes e FIFO
+// processar.js - Sistema de Processamento de Imagens PGM com Arquitetura de Dois Processos
+// Implementa comunicação via FIFO nomeado entre Processo Emissor e Processo Trabalhador
+// 
+// A solução é composta por dois processos independentes que se comunicam através de um FIFO nomeado:
+// 1. Processo Emissor (Sender): carrega a imagem PGM, empacota metadados e transmite via FIFO
+// 2. Processo Trabalhador (Worker): recebe dados via FIFO, instancia pool de threads com 
+//    sincronização por mutex e semáforos, processa a imagem e salva o resultado
 
 const fs = require('fs');
 const path = require('path');
-const { Worker } = require('worker_threads');
+const { spawn } = require('child_process');
+const os = require('os');
+const { readPGM } = require('./src/pgm-utils');
 
 /* ===== CONFIGURAÇÃO - ALTERE AQUI ===== */
 const CONFIG = {
@@ -13,7 +20,7 @@ const CONFIG = {
     nomeImagem: 'cavalao.pgm',  // Altere apenas o nome do arquivo
     
     // Tipo de filtro: 'negativo' ou 'slice'
-    filtro: 'slice',
+    filtro: 'negativo',
     
     // Parâmetros para filtro slice - conforme base matemática fornecida
     slice: {
@@ -22,20 +29,20 @@ const CONFIG = {
     },
     
     // Número de threads para processamento paralelo
-    threads: 4,
+    threads: 16,
     
     // Pastas (não altere)
     pastaEntrada: path.join(__dirname, 'images'),
     pastaSaida: path.join(__dirname, 'output')
 };
 
-/* ===== SISTEMA DE PROCESSAMENTO ===== */
+/* ===== SISTEMA DE PROCESSAMENTO COM DOIS PROCESSOS INDEPENDENTES ===== */
 
-
-class ProcessadorPGM {
+class ProcessadorPGMFifo {
     constructor() {
         this.prepararCaminhos();
         this.mostrarConfiguracao();
+        this.fifoPath = this.gerarCaminhoFifo();
     }
     
     prepararCaminhos() {
@@ -54,9 +61,23 @@ class ProcessadorPGM {
         }
     }
     
+    gerarCaminhoFifo() {
+        // Gera caminho único para o FIFO baseado no processo atual
+        const fifoName = `imgpipe_${process.pid}_${Date.now()}`;
+        
+        if (process.platform === 'win32') {
+            // No Windows, usa arquivo temporário como alternativa ao FIFO
+            return path.join(os.tmpdir(), fifoName);
+        } else {
+            // Em sistemas Unix, usa FIFO real
+            return path.join('/tmp', fifoName);
+        }
+    }
+    
     mostrarConfiguracao() {
         console.log('🚀 SISTEMA DE PROCESSAMENTO DE IMAGENS PGM');
         console.log('==========================================');
+        console.log('📡 ARQUITETURA: Dois Processos Independentes + FIFO');
         console.log(`📂 Pasta entrada: ${CONFIG.pastaEntrada}`);
         console.log(`📂 Imagem: ${CONFIG.nomeImagem}`);
         console.log(`📂 Pasta saída: ${CONFIG.pastaSaida}`);
@@ -101,115 +122,224 @@ class ProcessadorPGM {
             return false;
         }
         
-        return true;
-    }
-    
-    async processarComThreads() {
-        const { readPGM, writePGM, PGM, MODE_NEG, MODE_SLICE } = require('./src/pgm-utils');
+        // Verifica se os módulos necessários existem
+        const modulosNecessarios = [
+            path.join(__dirname, 'src', 'sender.js'),
+            path.join(__dirname, 'src', 'worker.js'),
+            path.join(__dirname, 'src', 'pgm-utils.js'),
+            path.join(__dirname, 'src', 'sync-utils.js'),
+            path.join(__dirname, 'src', 'filters.js'),
+            path.join(__dirname, 'src', 'worker-thread.js')
+        ];
         
-        console.log('📂 Carregando imagem...');
-        const inputPgm = readPGM(this.caminhoEntrada);
-        console.log(`✅ Carregada: ${inputPgm.w}x${inputPgm.h} pixels`);
-        
-        // Cria imagem de saída
-        const outputPgm = new PGM(inputPgm.w, inputPgm.h, inputPgm.maxv);
-        
-        // Determina modo do filtro
-        const mode = CONFIG.filtro === 'negativo' ? MODE_NEG : MODE_SLICE;
-        console.log(`🔧 Aplicando filtro: ${CONFIG.filtro}`);
-        
-        // Prepara dados para threads usando SharedArrayBuffer para compartilhar memória
-        const inputBuffer = new Uint8Array(inputPgm.data);
-        
-        // Cria buffer compartilhado para output que todas as threads podem modificar
-        const sharedOutputBuffer = new SharedArrayBuffer(inputPgm.data.length);
-        const outputBuffer = new Uint8Array(sharedOutputBuffer);
-        
-        // Divide trabalho em tarefas por linha
-        const tasks = [];
-        const linesPerThread = Math.ceil(inputPgm.h / CONFIG.threads);
-        
-        for (let i = 0; i < CONFIG.threads; i++) {
-            const rowStart = i * linesPerThread;
-            const rowEnd = Math.min((i + 1) * linesPerThread, inputPgm.h);
-            
-            if (rowStart < inputPgm.h) {
-                tasks.push({ row_start: rowStart, row_end: rowEnd });
+        for (const modulo of modulosNecessarios) {
+            if (!fs.existsSync(modulo)) {
+                console.error(`❌ Módulo necessário não encontrado: ${modulo}`);
+                return false;
             }
         }
         
-        console.log(`🧵 Processando com ${tasks.length} threads...`);
+        // Testa se pode carregar a imagem
+        try {
+            console.log('🔍 Validando imagem PGM...');
+            const pgm = readPGM(this.caminhoEntrada);
+            console.log(`✅ Imagem válida: ${pgm.w}x${pgm.h} pixels, maxv=${pgm.maxv}`);
+        } catch (error) {
+            console.error('❌ Erro ao validar imagem PGM:', error.message);
+            return false;
+        }
         
-        // Inicia processamento paralelo
-        const startTime = Date.now();
-        
-        const workerPromises = tasks.map((task, threadId) => {
-            return new Promise((resolve, reject) => {
-                const worker = new Worker(path.join(__dirname, 'src', 'worker-thread.js'), {
-                    workerData: {
-                        inputBuffer,
-                        sharedOutputBuffer, // Passa o SharedArrayBuffer ao invés do Uint8Array
-                        width: inputPgm.w,
-                        height: inputPgm.h,
-                        mode,
-                        t1: CONFIG.slice.t1,
-                        t2: CONFIG.slice.t2,
-                        maxValue: inputPgm.maxv,
-                        threadId
-                    }
-                });
-                
-                worker.postMessage({
-                    type: 'PROCESS_TASK',
-                    task
-                });
-                
-                worker.on('message', (message) => {
-                    if (message.type === 'TASK_COMPLETED') {
-                        console.log(`✅ Thread ${threadId}: ${message.processedPixels} pixels processados`);
-                        worker.terminate();
-                        resolve();
-                    } else if (message.type === 'TASK_ERROR') {
-                        reject(new Error(message.error));
-                    }
-                });
-                
-                worker.on('error', reject);
-            });
-        });
-        
-        // Aguarda conclusão de todas as threads
-        await Promise.all(workerPromises);
-        
-        const endTime = Date.now();
-        const processingTime = endTime - startTime;
-        
-        // Copia dados processados
-        outputPgm.data = Buffer.from(outputBuffer);
-        
-        // Salva resultado
-        console.log('💾 Salvando resultado...');
-        writePGM(this.caminhoSaida, outputPgm);
-        
-        // Mostra estatísticas
-        this.mostrarEstatisticas(inputPgm, processingTime);
-        
-        return this.caminhoSaida;
+        return true;
     }
     
-    mostrarEstatisticas(inputPgm, processingTime) {
-        const inputStats = fs.statSync(this.caminhoEntrada);
-        const outputStats = fs.statSync(this.caminhoSaida);
+    // ===== PROCESSO EMISSOR (Sender) =====
+    async iniciarProcessoEmissor() {
+        return new Promise((resolve, reject) => {
+            console.log('📤 Iniciando Processo Emissor...');
+            
+            // Argumentos para o processo emissor
+            const senderArgs = [
+                path.join(__dirname, 'src', 'sender.js'),
+                this.fifoPath,
+                this.caminhoEntrada
+            ];
+            
+            // Inicia processo emissor
+            const senderProcess = spawn('node', senderArgs, {
+                stdio: ['inherit', 'pipe', 'pipe']
+            });
+            
+            let senderOutput = '';
+            let senderError = '';
+            
+            senderProcess.stdout.on('data', (data) => {
+                const output = data.toString();
+                senderOutput += output;
+                console.log(`[EMISSOR] ${output.trim()}`);
+            });
+            
+            senderProcess.stderr.on('data', (data) => {
+                const error = data.toString();
+                senderError += error;
+                console.error(`[EMISSOR ERRO] ${error.trim()}`);
+            });
+            
+            senderProcess.on('close', (code) => {
+                if (code === 0) {
+                    console.log('✅ Processo Emissor concluído com sucesso');
+                    resolve(senderOutput);
+                } else {
+                    console.error(`❌ Processo Emissor falhou com código ${code}`);
+                    reject(new Error(`Processo Emissor falhou: ${senderError}`));
+                }
+            });
+            
+            senderProcess.on('error', (error) => {
+                console.error('❌ Erro ao iniciar Processo Emissor:', error.message);
+                reject(error);
+            });
+        });
+    }
+    
+    // ===== PROCESSO TRABALHADOR (Worker) =====
+    async iniciarProcessoTrabalhador() {
+        return new Promise((resolve, reject) => {
+            console.log('🔧 Iniciando Processo Trabalhador...');
+            
+            // Argumentos para o processo trabalhador
+            const workerArgs = [
+                path.join(__dirname, 'src', 'worker.js'),
+                this.fifoPath,
+                this.caminhoSaida,
+                CONFIG.filtro
+            ];
+            
+            // Adiciona parâmetros específicos do filtro
+            if (CONFIG.filtro === 'slice') {
+                workerArgs.push(CONFIG.slice.t1.toString());
+                workerArgs.push(CONFIG.slice.t2.toString());
+            }
+            
+            // Adiciona número de threads
+            workerArgs.push(CONFIG.threads.toString());
+            
+            // Inicia processo trabalhador
+            const workerProcess = spawn('node', workerArgs, {
+                stdio: ['inherit', 'pipe', 'pipe']
+            });
+            
+            let workerOutput = '';
+            let workerError = '';
+            
+            workerProcess.stdout.on('data', (data) => {
+                const output = data.toString();
+                workerOutput += output;
+                console.log(`[TRABALHADOR] ${output.trim()}`);
+            });
+            
+            workerProcess.stderr.on('data', (data) => {
+                const error = data.toString();
+                workerError += error;
+                console.error(`[TRABALHADOR ERRO] ${error.trim()}`);
+            });
+            
+            workerProcess.on('close', (code) => {
+                if (code === 0) {
+                    console.log('✅ Processo Trabalhador concluído com sucesso');
+                    resolve(workerOutput);
+                } else {
+                    console.error(`❌ Processo Trabalhador falhou com código ${code}`);
+                    reject(new Error(`Processo Trabalhador falhou: ${workerError}`));
+                }
+            });
+            
+            workerProcess.on('error', (error) => {
+                console.error('❌ Erro ao iniciar Processo Trabalhador:', error.message);
+                reject(error);
+            });
+        });
+    }
+    
+    // ===== COORDENAÇÃO DOS DOIS PROCESSOS =====
+    // Implementa a sincronização entre emissor e trabalhador via FIFO
+    // A sincronização é garantida por:
+    // • FIFO nomeado para comunicação entre processos
+    // • Mutex, semáforos contadores e semáforo de conclusão no processo trabalhador
+    // • Pool de threads com fila de tarefas protegida por sincronização
+    async processarComDoisProcessos() {
+        const startTime = Date.now();
         
-        console.log('\n🎉 PROCESSAMENTO CONCLUÍDO!');
-        console.log('===========================');
-        console.log(`📁 Resultado: ${this.caminhoSaida}`);
-        console.log(`📊 Entrada: ${inputStats.size} bytes`);
-        console.log(`📊 Saída: ${outputStats.size} bytes`);
-        console.log(`⏱️  Tempo: ${processingTime}ms`);
-        console.log(`🧵 Threads: ${CONFIG.threads}`);
-        console.log(`📏 Pixels: ${inputPgm.w * inputPgm.h}`);
-        console.log(`⚡ Performance: ${Math.round((inputPgm.w * inputPgm.h) / processingTime)} pixels/ms`);
+        console.log('🔄 Iniciando comunicação via FIFO...');
+        console.log(`📡 FIFO: ${this.fifoPath}`);
+        console.log('🔄 Sincronização: FIFO + Mutex + Semáforos + Pool de Threads');
+        
+        try {
+            // Inicia ambos os processos simultaneamente
+            // O processo trabalhador ficará bloqueado aguardando dados do FIFO
+            // O processo emissor enviará os dados e desbloqueará o trabalhador
+            console.log('🚀 Iniciando processos independentes...');
+            
+            const [senderResult, workerResult] = await Promise.all([
+                this.iniciarProcessoEmissor(),
+                this.iniciarProcessoTrabalhador()
+            ]);
+            
+            const endTime = Date.now();
+            const processingTime = endTime - startTime;
+            
+            console.log('✅ Ambos os processos concluídos com sucesso!');
+            
+            // Verifica se o arquivo de saída foi criado
+            if (!fs.existsSync(this.caminhoSaida)) {
+                throw new Error('Arquivo de saída não foi criado pelo processo trabalhador');
+            }
+            
+            // Mostra estatísticas finais
+            this.mostrarEstatisticas(processingTime);
+            
+            return this.caminhoSaida;
+            
+        } catch (error) {
+            console.error('💥 Erro na coordenação dos processos:', error.message);
+            throw error;
+        } finally {
+            // Limpa o FIFO temporário
+            this.limparFifo();
+        }
+    }
+    
+    limparFifo() {
+        try {
+            if (fs.existsSync(this.fifoPath)) {
+                fs.unlinkSync(this.fifoPath);
+                console.log(`🧹 FIFO temporário removido: ${this.fifoPath}`);
+            }
+        } catch (error) {
+            console.warn(`⚠️  Aviso: Não foi possível remover FIFO: ${error.message}`);
+        }
+    }
+    
+    mostrarEstatisticas(processingTime) {
+        try {
+            const inputStats = fs.statSync(this.caminhoEntrada);
+            const outputStats = fs.statSync(this.caminhoSaida);
+            
+            console.log('\n🎉 PROCESSAMENTO CONCLUÍDO!');
+            console.log('===========================');
+            console.log(`📁 Resultado: ${this.caminhoSaida}`);
+            console.log(`📊 Entrada: ${inputStats.size} bytes`);
+            console.log(`📊 Saída: ${outputStats.size} bytes`);
+            console.log(`⏱️  Tempo: ${processingTime}ms`);
+            console.log(`🧵 Threads: ${CONFIG.threads}`);
+            console.log(`📡 Arquitetura: Dois Processos + FIFO`);
+            
+            // Calcula pixels processados (estimativa baseada no tamanho do arquivo)
+            const estimatedPixels = Math.floor(inputStats.size * 0.9); // Desconta cabeçalho
+            console.log(`📏 Pixels (est.): ${estimatedPixels}`);
+            console.log(`⚡ Performance: ${Math.round(estimatedPixels / processingTime)} pixels/ms`);
+        } catch (error) {
+            console.warn('⚠️  Não foi possível calcular estatísticas:', error.message);
+        }
     }
     
     async executar() {
@@ -218,7 +348,7 @@ class ProcessadorPGM {
                 return;
             }
             
-            await this.processarComThreads();
+            await this.processarComDoisProcessos();
             
             console.log('\n✅ SISTEMA EXECUTADO COM SUCESSO!');
             console.log('\n💡 Para processar outra imagem:');
@@ -228,6 +358,10 @@ class ProcessadorPGM {
             
         } catch (error) {
             console.error('\n💥 Erro no processamento:', error.message);
+            
+            // Limpa recursos em caso de erro
+            this.limparFifo();
+            
             process.exit(1);
         }
     }
@@ -253,8 +387,8 @@ if (require.main === module) {
     // Permite uso via linha de comando
     parseCommandLine();
     
-    const processador = new ProcessadorPGM();
+    const processador = new ProcessadorPGMFifo();
     processador.executar();
 }
 
-module.exports = ProcessadorPGM;
+module.exports = ProcessadorPGMFifo;
