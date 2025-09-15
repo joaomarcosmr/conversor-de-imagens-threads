@@ -125,44 +125,7 @@ function validateSliceParams(t1, t2, maxValue = 255) {
     return true;
 }
 
-/**
- * Calcula estatísticas de processamento para debug
- */
-function calculateStats(inputData, outputData, rowStart, rowEnd, width) {
-    const startPixel = rowStart * width;
-    const endPixel = rowEnd * width;
-    
-    let minIn = 255, maxIn = 0, avgIn = 0;
-    let minOut = 255, maxOut = 0, avgOut = 0;
-    
-    for (let i = startPixel; i < endPixel; i++) {
-        const inVal = inputData[i];
-        const outVal = outputData[i];
-        
-        minIn = Math.min(minIn, inVal);
-        maxIn = Math.max(maxIn, inVal);
-        avgIn += inVal;
-        
-        minOut = Math.min(minOut, outVal);
-        maxOut = Math.max(maxOut, outVal);
-        avgOut += outVal;
-    }
-    
-    const pixelCount = endPixel - startPixel;
-    avgIn /= pixelCount;
-    avgOut /= pixelCount;
-    
-    return {
-        pixelCount,
-        input: { min: minIn, max: maxIn, avg: Math.round(avgIn) },
-        output: { min: minOut, max: maxOut, avg: Math.round(avgOut) }
-    };
-}
-
 module.exports = {
-    applyNegativeBlock,
-    applySliceBlock,
     applyFilter,
     validateSliceParams,
-    calculateStats
 };
