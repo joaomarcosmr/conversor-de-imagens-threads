@@ -5,12 +5,9 @@
   "main": "src/index.js",
   "scripts": {
     "start": "node processar.js",
-    "processar": "node processar.js",
-    "visualizar": "node visualizar-pgm.js",
-    "ver": "node visualizar-pgm.js && start visualizador\\index.html",
-    "atualizar": "node atualizar-visualizador.js",
-    "sender": "node src/sender.js",
-    "worker": "node src/worker.js"
+    "sender": "node src/sender.js /tmp/imgpipe images/cavalao.pgm",
+    "worker-negativo": "node src/worker.js /tmp/imgpipe output.pgm negativo 4",
+    "worker-slice": "node src/worker.js /tmp/imgpipe output_slice.pgm slice 50 200 4"
   },
   "keywords": [
     "image-processing",
