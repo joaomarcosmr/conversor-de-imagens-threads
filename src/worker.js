@@ -142,9 +142,10 @@ async function processWithThreadPool(inputPgm, mode, t1, t2, nthreads) {
     const outputPgm = new PGM(inputPgm.w, inputPgm.h, inputPgm.maxv); // g_out equivalente
     
     // Compartilha dados entre threads (equivalente a g_in, g_out globais)
+    // Array tipado que armazena números inteiros de 0 a 255 (8 bits sem sinal)
     const inputBuffer = new Uint8Array(inputPgm.data);   // g_in.data
     
-    // Cria SharedArrayBuffer para permitir compartilhamento entre threads
+    // Cria SharedArrayBuffer para permitir compartilhamento entre threads -- - Cria um bloco de memória compartilhada entre threads ou seja, passa o valor por referencia (lembrando que javascript é por valor)
     const sharedOutputBuffer = new SharedArrayBuffer(inputPgm.data.length);
     const outputBuffer = new Uint8Array(sharedOutputBuffer); // g_out.data
     
