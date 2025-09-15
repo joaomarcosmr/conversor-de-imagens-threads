@@ -65,8 +65,8 @@ parentPort.on('message', async (message) => {
             parentPort.postMessage({
                 type: 'TASK_COMPLETED',
                 threadId,
-                task,
-                processedPixels
+                taskId: message.taskId,
+                processedPixels: task.rowEnd - task.rowStart
             });
             
         } catch (error) {

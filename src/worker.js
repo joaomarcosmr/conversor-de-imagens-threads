@@ -139,111 +139,103 @@ function createTasks(height, nthreads) {
 
 // ===== Passo 3) Cria pool de threads e fila de tarefas =====
 async function processWithThreadPool(inputPgm, mode, t1, t2, nthreads) {
-    const outputPgm = new PGM(inputPgm.w, inputPgm.h, inputPgm.maxv); // g_out equivalente
-    
-    // Compartilha dados entre threads (equivalente a g_in, g_out globais)
-    // Array tipado que armazena números inteiros de 0 a 255 (8 bits sem sinal)
-    const inputBuffer = new Uint8Array(inputPgm.data);   // g_in.data
-    
-    // Cria SharedArrayBuffer para permitir compartilhamento entre threads -- - Cria um bloco de memória compartilhada entre threads ou seja, passa o valor por referencia (lembrando que javascript é por valor)
+    const outputPgm = new PGM(inputPgm.w, inputPgm.h, inputPgm.maxv);
+
+    const inputBuffer = new Uint8Array(inputPgm.data);
     const sharedOutputBuffer = new SharedArrayBuffer(inputPgm.data.length);
-    const outputBuffer = new Uint8Array(sharedOutputBuffer); // g_out.data
-    
-    // Cria tarefas (divide o trabalho em blocos de linhas)
+    const outputBuffer = new Uint8Array(sharedOutputBuffer);
+
     const tasks = createTasks(inputPgm.h, nthreads);
-    
-    // Coordenador de conclusão (equivalente a remaining_tasks e sem_done)
     const coordinator = new CompletionCoordinator(tasks.length);
-    
+
     console.log(`Iniciando ${nthreads} worker threads...`);
-    
+
     // 3) Cria pool de threads
     const workers = [];
-    const workerPromises = [];
-    
+
     for (let i = 0; i < nthreads; i++) {
-        // Cria worker thread (equivalente a pthread_create)
         const worker = new Worker(path.join(__dirname, 'worker-thread.js'), {
             workerData: {
-                inputBuffer,              // g_in.data
-                sharedOutputBuffer,       // SharedArrayBuffer para g_out.data
-                width: inputPgm.w,        // g_in.w
-                height: inputPgm.h,       // g_in.h
-                mode,                     // g_mode
-                t1,                       // g_t1
-                t2,                       // g_t2
-                maxValue: inputPgm.maxv,  // g_in.maxv
-                threadId: i               // identificador da thread
+                inputBuffer,
+                sharedOutputBuffer,
+                width: inputPgm.w,
+                height: inputPgm.h,
+                mode,
+                t1,
+                t2,
+                maxValue: inputPgm.maxv,
+                threadId: i
             }
         });
-        
+
         workers.push(worker);
-        
-        // Promise para lidar com mensagens do worker
-        const workerPromise = new Promise((resolve, reject) => {
+    }
+
+    // Array para promises das TAREFAS (não dos workers)
+    const taskPromises = [];
+
+    // Distribui tarefas para os workers
+    console.log('Distribuindo tarefas...');
+    for (let i = 0; i < tasks.length; i++) {
+        const worker = workers[i % nthreads];
+
+        // Promise para CADA TAREFA individual
+        const taskPromise = new Promise((resolve, reject) => {
             let taskCompleted = false;
-            
-            worker.on('message', async (message) => {
-                if (message.type === 'TASK_COMPLETED') {
-                    console.log(`Thread ${message.threadId} concluiu tarefa (${message.processedPixels} pixels)`);
-                    // Equivalente a decrementar remaining_tasks e sinalizar sem_done
+
+            // Listener específico para ESTA tarefa
+            const messageListener = async (message) => {
+                if (message.type === 'TASK_COMPLETED' && message.taskId === i) {
+                    console.log(`Thread ${message.threadId} concluiu tarefa ${i} (${message.processedPixels} pixels)`);
                     await coordinator.taskCompleted();
                     taskCompleted = true;
-                } else if (message.type === 'TASK_ERROR') {
-                    console.error(`Thread ${message.threadId} erro: ${message.error}`);
+                    worker.off('message', messageListener); // Remove listener
+                    resolve();
+                } else if (message.type === 'TASK_ERROR' && message.taskId === i) {
+                    console.error(`Thread ${message.threadId} erro na tarefa ${i}: ${message.error}`);
+                    worker.off('message', messageListener);
                     reject(new Error(message.error));
                 }
-            });
-            
+            };
+
+            worker.on('message', messageListener);
+
             worker.on('error', (error) => {
                 if (!taskCompleted) {
                     reject(error);
                 }
             });
-            
-            worker.on('exit', (code) => {
-                if (code !== 0 && !taskCompleted) {
-                    reject(new Error(`Worker ${i} saiu com código ${code} antes de completar tarefa`));
-                } else {
-                    resolve();
-                }
-            });
         });
-        
-        workerPromises.push(workerPromise);
-    }
-    
-    // Distribui tarefas para os workers (equivalente a enqueue na fila de tarefas)
-    console.log('Distribuindo tarefas...');
-    for (let i = 0; i < tasks.length; i++) {
-        const worker = workers[i % nthreads];
+
+        taskPromises.push(taskPromise); // ← Adiciona promise da TAREFA
+
+        // Envia tarefa com ID
         worker.postMessage({
             type: 'PROCESS_TASK',
-            task: tasks[i]
+            task: tasks[i],
+            taskId: i  // ← Importante: ID da tarefa
         });
     }
-    
-    // 5) Aguarda término de todas as tarefas
+
+    // 5)  Aguarda TODAS as promises das tarefas
     console.log('Aguardando conclusão das tarefas...');
-    await coordinator.waitForCompletion(); // Equivalente a sem_wait(sem_done)
-    
-    // 8) Libera recursos - termina todos os workers
+    await Promise.all(taskPromises); // ← USA as promises coletadas!
+    await coordinator.waitForCompletion();
+
+    // 8) Libera recursos
     console.log('Terminando worker threads...');
     for (const worker of workers) {
         worker.postMessage({ type: 'TERMINATE' });
     }
-    
-    // Aguarda um pouco para que os workers processem a mensagem TERMINATE
+
     await new Promise(resolve => setTimeout(resolve, 100));
-    
-    // Força o término se necessário
+
     for (const worker of workers) {
-        await worker.terminate(); // Equivalente a pthread_join
+        await worker.terminate();
     }
-    
-    // Copia dados processados de volta para o PGM
+
     outputPgm.data = Buffer.from(outputBuffer);
-    
+
     console.log('Processamento concluído');
     return outputPgm;
 }
