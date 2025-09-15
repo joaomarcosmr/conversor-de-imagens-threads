@@ -10,7 +10,7 @@ const { Worker } = require('worker_threads');
 /* ===== CONFIGURAÇÃO - ALTERE AQUI ===== */
 const CONFIG = {
     // Nome da imagem na pasta images/ (sem caminho completo)
-    nomeImagem: 'cavalo.pgm',  // Altere apenas o nome do arquivo
+    nomeImagem: 'cavalao.pgm',  // Altere apenas o nome do arquivo
     
     // Tipo de filtro: 'negativo' ou 'slice'
     filtro: 'slice',
@@ -30,6 +30,7 @@ const CONFIG = {
 };
 
 /* ===== SISTEMA DE PROCESSAMENTO ===== */
+
 
 class ProcessadorPGM {
     constructor() {
@@ -117,9 +118,12 @@ class ProcessadorPGM {
         const mode = CONFIG.filtro === 'negativo' ? MODE_NEG : MODE_SLICE;
         console.log(`🔧 Aplicando filtro: ${CONFIG.filtro}`);
         
-        // Prepara dados para threads
+        // Prepara dados para threads usando SharedArrayBuffer para compartilhar memória
         const inputBuffer = new Uint8Array(inputPgm.data);
-        const outputBuffer = new Uint8Array(outputPgm.data);
+        
+        // Cria buffer compartilhado para output que todas as threads podem modificar
+        const sharedOutputBuffer = new SharedArrayBuffer(inputPgm.data.length);
+        const outputBuffer = new Uint8Array(sharedOutputBuffer);
         
         // Divide trabalho em tarefas por linha
         const tasks = [];
@@ -144,7 +148,7 @@ class ProcessadorPGM {
                 const worker = new Worker(path.join(__dirname, 'src', 'worker-thread.js'), {
                     workerData: {
                         inputBuffer,
-                        outputBuffer,
+                        sharedOutputBuffer, // Passa o SharedArrayBuffer ao invés do Uint8Array
                         width: inputPgm.w,
                         height: inputPgm.h,
                         mode,

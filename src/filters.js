@@ -13,12 +13,25 @@ function applyNegativeBlock(inputData, outputData, width, rowStart, rowEnd, maxV
     const startPixel = rowStart * width;   // rs * width (linha inicial)
     const endPixel = rowEnd * width;       // re * width (linha final)
     
+    let minInput = 255, maxInput = 0, minOutput = 255, maxOutput = 0;
+    
     // Implementação do pseudo código - Loop pelos pixels do bloco
     for (let i = startPixel; i < endPixel; i++) {
         const r = inputData[i];           // r = pixel de entrada
         const L = maxValue + 1;           // L = máximo valor representado (256)
         const s = L - 1 - r;             // s = T(r) = L - 1 - r = 255 - r
         outputData[i] = s;                // novo_pixel = 255 - valor_pixel_original
+        
+        // Estatísticas para debug
+        minInput = Math.min(minInput, r);
+        maxInput = Math.max(maxInput, r);
+        minOutput = Math.min(minOutput, s);
+        maxOutput = Math.max(maxOutput, s);
+    }
+    
+    // Debug: log da primeira thread para ver estatísticas
+    if (rowStart === 0) {
+        console.log(`Debug negativo: input[${minInput}-${maxInput}] -> output[${minOutput}-${maxOutput}]`);
     }
     
     return endPixel - startPixel; // Retorna número de pixels processados
@@ -41,16 +54,31 @@ function applySliceBlock(inputData, outputData, width, rowStart, rowEnd, limite_
     const startPixel = rowStart * width;   // rs * width (linha inicial)
     const endPixel = rowEnd * width;       // re * width (linha final)
     
-    // Implementação do pseudo código - Loop pelos pixels do bloco
+    // Conforme fórmula matemática: z' = 0 se z ≤ a ou z ≥ b, z' = k se a < z < b
+    // onde k é um valor de destaque (usaremos 255 para máximo contraste)
+    const k = 255; // valor para pixels dentro da faixa
+    
+    let pixelsInRange = 0;
+    let pixelsOutRange = 0;
+    
+    // Implementação da fórmula matemática - Loop pelos pixels do bloco
     for (let i = startPixel; i < endPixel; i++) {
-        const valor_pixel_original = inputData[i];  // valor_pixel_original[x,y]
+        const z = inputData[i];  // valor do pixel original (z)
         
-        // Se valor_pixel_original <= Limite_a OU valor_pixel_original >= Limite_b
-        if (valor_pixel_original <= limite_a || valor_pixel_original >= limite_b) {
-            outputData[i] = 255;                     // novo_pixel[x,y] = 255
+        // z' = 0 se z ≤ a ou z ≥ b (pixels fora da faixa ficam pretos)
+        if (z <= limite_a || z >= limite_b) {
+            outputData[i] = 0;   // z' = 0
+            pixelsOutRange++;
         } else {
-            outputData[i] = valor_pixel_original;    // novo_pixel[x,y] = valor_pixel_original[x,y]
+            // z' = k se a < z < b (pixels dentro da faixa ficam com valor k)
+            outputData[i] = k;   // z' = k
+            pixelsInRange++;
         }
+    }
+    
+    // Debug: log da primeira thread para ver estatísticas
+    if (rowStart === 0) {
+        console.log(`Debug slice: ${pixelsInRange} pixels na faixa [${limite_a+1}-${limite_b-1}], ${pixelsOutRange} pixels fora`);
     }
     
     return endPixel - startPixel; // Retorna número de pixels processados

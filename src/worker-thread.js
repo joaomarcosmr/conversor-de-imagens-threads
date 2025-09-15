@@ -16,16 +16,19 @@ const { applyFilter } = require('./filters');
 // int g_mode; // MODE_NEG ou MODE_SLICE
 // int g_t1, g_t2;
 const {
-    inputBuffer,    // equivalente a g_in.data
-    outputBuffer,   // equivalente a g_out.data
-    width,          // g_in.w
-    height,         // g_in.h
-    mode,           // g_mode
-    t1,             // g_t1
-    t2,             // g_t2
-    maxValue,       // g_in.maxv
-    threadId        // identificador da thread
+    inputBuffer,        // equivalente a g_in.data
+    sharedOutputBuffer, // SharedArrayBuffer compartilhado
+    width,              // g_in.w
+    height,             // g_in.h
+    mode,               // g_mode
+    t1,                 // g_t1
+    t2,                 // g_t2
+    maxValue,           // g_in.maxv
+    threadId            // identificador da thread
 } = workerData;
+
+// Cria view do SharedArrayBuffer para esta thread
+const outputBuffer = new Uint8Array(sharedOutputBuffer);
 
 console.log(`Worker ${threadId} iniciado`);
 
